@@ -76,6 +76,7 @@
       const TARGET_DPI = 300;
       const TARGET_WIDTH_PX = 12 * TARGET_DPI; // 3600
       const METERS_PER_INCH = 0.0254;
+      const BINARY_STRING_CHUNK_SIZE = 0x8000;
 
       const fileInput = document.getElementById('fileInput');
       const processBtn = document.getElementById('processBtn');
@@ -208,7 +209,10 @@
           }
         }
 
-        regions.sort((a, b) => b.height - a.height || b.width - a.width);
+        regions.sort((a, b) => {
+          const heightDiff = b.height - a.height;
+          return heightDiff !== 0 ? heightDiff : b.width - a.width;
+        });
         return regions;
       }
 
@@ -255,7 +259,7 @@
       }
 
       function setPngDpi(dataUrl, dpi) {
-        const [, base64] = dataUrl.split(',');
+        const base64 = dataUrl.split(',')[1] ?? '';
         const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
         const ppm = Math.round(dpi / METERS_PER_INCH);
@@ -322,9 +326,8 @@
 
       function uint8ToBinaryString(bytes) {
         let out = '';
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          out += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+        for (let i = 0; i < bytes.length; i += BINARY_STRING_CHUNK_SIZE) {
+          out += String.fromCharCode(...bytes.subarray(i, i + BINARY_STRING_CHUNK_SIZE));
         }
         return out;
       }
