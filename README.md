@@ -11,7 +11,7 @@ A lightweight browser app to:
 
 No build step is required.
 
-Open `/home/runner/work/17to13/17to13/index.html` in a browser.
+Open `index.html` in a browser (from the repository root).
 
 ## Notes
 
