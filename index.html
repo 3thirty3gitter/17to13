@@ -295,7 +295,7 @@
         }
 
         const merged = concatUint8Arrays(rebuilt);
-        const outBase64 = btoa(String.fromCharCode(...merged));
+        const outBase64 = btoa(uint8ToBinaryString(merged));
         return `data:image/png;base64,${outBase64}`;
       }
 
@@ -316,6 +316,15 @@
         for (const c of chunks) {
           out.set(c, offset);
           offset += c.length;
+        }
+        return out;
+      }
+
+      function uint8ToBinaryString(bytes) {
+        let out = '';
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          out += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
         }
         return out;
       }
