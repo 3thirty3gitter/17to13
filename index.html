@@ -75,6 +75,7 @@
     <script>
       const TARGET_DPI = 300;
       const TARGET_WIDTH_PX = 12 * TARGET_DPI; // 3600
+      const METERS_PER_INCH = 0.0254;
 
       const fileInput = document.getElementById('fileInput');
       const processBtn = document.getElementById('processBtn');
@@ -152,8 +153,7 @@
         const visited = new Uint8Array(width * height);
         const regions = [];
 
-        const queueX = new Int32Array(width * height);
-        const queueY = new Int32Array(width * height);
+        const queue = new Int32Array(width * height);
 
         const isVisible = (x, y) => data[(y * width + x) * 4 + 3] > 0;
 
@@ -164,9 +164,7 @@
 
             let qh = 0;
             let qt = 0;
-            queueX[qt] = x;
-            queueY[qt] = y;
-            qt++;
+            queue[qt++] = idx;
             visited[idx] = 1;
 
             let minX = x;
@@ -175,9 +173,9 @@
             let maxY = y;
 
             while (qh < qt) {
-              const cx = queueX[qh];
-              const cy = queueY[qh];
-              qh++;
+              const current = queue[qh++];
+              const cx = current % width;
+              const cy = (current / width) | 0;
 
               if (cx < minX) minX = cx;
               if (cx > maxX) maxX = cx;
@@ -196,9 +194,7 @@
                 const nidx = ny * width + nx;
                 if (visited[nidx] || !isVisible(nx, ny)) continue;
                 visited[nidx] = 1;
-                queueX[qt] = nx;
-                queueY[qt] = ny;
-                qt++;
+                queue[qt++] = nidx;
               }
             }
 
@@ -262,7 +258,7 @@
         const [, base64] = dataUrl.split(',');
         const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
-        const ppm = Math.round(dpi / 0.0254);
+        const ppm = Math.round(dpi / METERS_PER_INCH);
         const chunkData = new Uint8Array(9);
         writeUInt32(chunkData, 0, ppm);
         writeUInt32(chunkData, 4, ppm);
