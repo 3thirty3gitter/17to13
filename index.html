@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>12-inch PNG Rearranger</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+      }
+      .wrap {
+        max-width: 900px;
+        margin: 0 auto;
+      }
+      .card {
+        border: 1px solid #6664;
+        border-radius: 12px;
+        padding: 16px;
+      }
+      button,
+      input {
+        font: inherit;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+      canvas {
+        max-width: 100%;
+        border: 1px dashed #6668;
+        border-radius: 8px;
+        margin-top: 12px;
+      }
+      .muted {
+        opacity: 0.8;
+        font-size: 0.95rem;
+      }
+      .error {
+        color: #b00020;
+        margin-top: 10px;
+      }
+      .ok {
+        color: #0f7a2f;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>12-inch PNG Rearranger</h1>
+      <p class="muted">
+        Upload a PNG containing multiple images. This app detects separate image regions,
+        keeps each one at the exact original dimensions, and repacks them into a PNG that
+        is exactly 12 inches wide at 300 DPI (3600 px wide). Output height is automatic.
+      </p>
+
+      <section class="card">
+        <div class="row">
+          <input id="fileInput" type="file" accept="image/png" />
+          <button id="processBtn" type="button" disabled>Rearrange</button>
+          <a id="downloadLink" download="rearranged-12in-300dpi.png" hidden>Download output PNG</a>
+        </div>
+        <div id="message" class="muted"></div>
+        <canvas id="preview" hidden></canvas>
+      </section>
+    </main>
+
+    <script>
+      const TARGET_DPI = 300;
+      const TARGET_WIDTH_PX = 12 * TARGET_DPI; // 3600
+      const METERS_PER_INCH = 0.0254;
+      const BINARY_STRING_CHUNK_SIZE = 0x8000;
+
+      const fileInput = document.getElementById('fileInput');
+      const processBtn = document.getElementById('processBtn');
+      const preview = document.getElementById('preview');
+      const downloadLink = document.getElementById('downloadLink');
+      const message = document.getElementById('message');
+
+      let sourceImage = null;
+
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files?.[0];
+        downloadLink.hidden = true;
+        preview.hidden = true;
+        message.className = 'muted';
+
+        if (!file) {
+          processBtn.disabled = true;
+          sourceImage = null;
+          message.textContent = '';
+          return;
+        }
+        if (file.type !== 'image/png') {
+          processBtn.disabled = true;
+          sourceImage = null;
+          message.className = 'error';
+          message.textContent = 'Please select a PNG file.';
+          return;
+        }
+
+        const bitmap = await createImageBitmap(file);
+        sourceImage = bitmap;
+        processBtn.disabled = false;
+        message.textContent = `Loaded ${bitmap.width}×${bitmap.height}px PNG.`;
+      });
+
+      processBtn.addEventListener('click', () => {
+        if (!sourceImage) return;
+        try {
+          const regions = detectRegions(sourceImage);
+          if (regions.length === 0) {
+            throw new Error('No non-transparent image regions were detected.');
+          }
+
+          const packed = packRegions(regions, TARGET_WIDTH_PX);
+          const output = renderPacked(packed, TARGET_WIDTH_PX);
+
+          preview.width = output.width;
+          preview.height = output.height;
+          preview.getContext('2d').drawImage(output, 0, 0);
+          preview.hidden = false;
+
+          const rawDataUrl = output.toDataURL('image/png');
+          const dataUrlWithDpi = setPngDpi(rawDataUrl, TARGET_DPI);
+          downloadLink.href = dataUrlWithDpi;
+          downloadLink.hidden = false;
+
+          message.className = 'ok';
+          message.textContent = `Detected ${regions.length} images. Output: ${TARGET_WIDTH_PX}×${output.height}px @ ${TARGET_DPI} DPI.`;
+        } catch (err) {
+          message.className = 'error';
+          message.textContent = err instanceof Error ? err.message : String(err);
+          downloadLink.hidden = true;
+          preview.hidden = true;
+        }
+      });
+
+      function detectRegions(bitmap) {
+        const c = document.createElement('canvas');
+        c.width = bitmap.width;
+        c.height = bitmap.height;
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(bitmap, 0, 0);
+
+        const { data, width, height } = ctx.getImageData(0, 0, c.width, c.height);
+        const visited = new Uint8Array(width * height);
+        const regions = [];
+
+        const queue = new Int32Array(width * height);
+
+        const isVisible = (x, y) => data[(y * width + x) * 4 + 3] > 0;
+
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const idx = y * width + x;
+            if (visited[idx] || !isVisible(x, y)) continue;
+
+            let qh = 0;
+            let qt = 0;
+            queue[qt++] = idx;
+            visited[idx] = 1;
+
+            let minX = x;
+            let maxX = x;
+            let minY = y;
+            let maxY = y;
+
+            while (qh < qt) {
+              const current = queue[qh++];
+              const cx = current % width;
+              const cy = (current / width) | 0;
+
+              if (cx < minX) minX = cx;
+              if (cx > maxX) maxX = cx;
+              if (cy < minY) minY = cy;
+              if (cy > maxY) maxY = cy;
+
+              const neighbors = [
+                [cx + 1, cy],
+                [cx - 1, cy],
+                [cx, cy + 1],
+                [cx, cy - 1],
+              ];
+
+              for (const [nx, ny] of neighbors) {
+                if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                const nidx = ny * width + nx;
+                if (visited[nidx] || !isVisible(nx, ny)) continue;
+                visited[nidx] = 1;
+                queue[qt++] = nidx;
+              }
+            }
+
+            const rw = maxX - minX + 1;
+            const rh = maxY - minY + 1;
+            const tile = document.createElement('canvas');
+            tile.width = rw;
+            tile.height = rh;
+            tile.getContext('2d').drawImage(c, minX, minY, rw, rh, 0, 0, rw, rh);
+            regions.push({ canvas: tile, width: rw, height: rh });
+          }
+        }
+
+        regions.sort((a, b) => {
+          const heightDiff = b.height - a.height;
+          return heightDiff !== 0 ? heightDiff : b.width - a.width;
+        });
+        return regions;
+      }
+
+      function packRegions(regions, targetWidth) {
+        let x = 0;
+        let y = 0;
+        let rowHeight = 0;
+        const placed = [];
+
+        for (const region of regions) {
+          if (region.width > targetWidth) {
+            throw new Error(`An image region is ${region.width}px wide, which exceeds the fixed output width of ${targetWidth}px.`);
+          }
+
+          if (x + region.width > targetWidth) {
+            x = 0;
+            y += rowHeight;
+            rowHeight = 0;
+          }
+
+          placed.push({ ...region, x, y });
+          x += region.width;
+          rowHeight = Math.max(rowHeight, region.height);
+        }
+
+        return {
+          items: placed,
+          height: y + rowHeight,
+        };
+      }
+
+      function renderPacked(packed, targetWidth) {
+        const out = document.createElement('canvas');
+        out.width = targetWidth;
+        out.height = Math.max(1, packed.height);
+        const ctx = out.getContext('2d');
+        ctx.clearRect(0, 0, out.width, out.height);
+
+        for (const item of packed.items) {
+          ctx.drawImage(item.canvas, item.x, item.y);
+        }
+
+        return out;
+      }
+
+      function setPngDpi(dataUrl, dpi) {
+        const base64 = dataUrl.split(',')[1] ?? '';
+        const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+
+        const ppm = Math.round(dpi / METERS_PER_INCH);
+        const chunkData = new Uint8Array(9);
+        writeUInt32(chunkData, 0, ppm);
+        writeUInt32(chunkData, 4, ppm);
+        chunkData[8] = 1; // unit: meter
+
+        const type = new Uint8Array([0x70, 0x48, 0x59, 0x73]); // pHYs
+        const chunk = buildChunk(type, chunkData);
+
+        const signature = bytes.slice(0, 8);
+        let pos = 8;
+        let inserted = false;
+        const rebuilt = [signature];
+
+        while (pos < bytes.length) {
+          const len = readUInt32(bytes, pos);
+          const chunkStart = pos;
+          const chunkEnd = pos + 12 + len;
+          const chunkType = bytes.slice(pos + 4, pos + 8);
+          const name = String.fromCharCode(...chunkType);
+
+          if (name !== 'pHYs') {
+            rebuilt.push(bytes.slice(chunkStart, chunkEnd));
+            if (!inserted && name === 'IHDR') {
+              rebuilt.push(chunk);
+              inserted = true;
+            }
+          }
+
+          pos = chunkEnd;
+        }
+
+        if (!inserted) {
+          rebuilt.push(chunk);
+        }
+
+        const merged = concatUint8Arrays(rebuilt);
+        const outBase64 = btoa(uint8ToBinaryString(merged));
+        return `data:image/png;base64,${outBase64}`;
+      }
+
+      function buildChunk(type, data) {
+        const out = new Uint8Array(12 + data.length);
+        writeUInt32(out, 0, data.length);
+        out.set(type, 4);
+        out.set(data, 8);
+        const crc = crc32(out.slice(4, 8 + data.length));
+        writeUInt32(out, 8 + data.length, crc >>> 0);
+        return out;
+      }
+
+      function concatUint8Arrays(chunks) {
+        const len = chunks.reduce((sum, c) => sum + c.length, 0);
+        const out = new Uint8Array(len);
+        let offset = 0;
+        for (const c of chunks) {
+          out.set(c, offset);
+          offset += c.length;
+        }
+        return out;
+      }
+
+      function uint8ToBinaryString(bytes) {
+        let out = '';
+        for (let i = 0; i < bytes.length; i += BINARY_STRING_CHUNK_SIZE) {
+          out += String.fromCharCode(...bytes.subarray(i, i + BINARY_STRING_CHUNK_SIZE));
+        }
+        return out;
+      }
+
+      function readUInt32(bytes, offset) {
+        return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+      }
+
+      function writeUInt32(bytes, offset, value) {
+        bytes[offset] = (value >>> 24) & 255;
+        bytes[offset + 1] = (value >>> 16) & 255;
+        bytes[offset + 2] = (value >>> 8) & 255;
+        bytes[offset + 3] = value & 255;
+      }
+
+      const crcTable = (() => {
+        const table = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          let c = i;
+          for (let j = 0; j < 8; j++) {
+            c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+          }
+          table[i] = c >>> 0;
+        }
+        return table;
+      })();
+
+      function crc32(bytes) {
+        let c = 0xffffffff;
+        for (let i = 0; i < bytes.length; i++) {
+          c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+        }
+        return (c ^ 0xffffffff) >>> 0;
+      }
+    </script>
+  </body>
+</html>
